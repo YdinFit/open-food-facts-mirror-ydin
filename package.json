@@ -1,0 +1,13 @@
+{
+  "name": "open-food-facts-mirror",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "estimate": "node ai-guesstimate.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "openai": "^4"
+  }
+}

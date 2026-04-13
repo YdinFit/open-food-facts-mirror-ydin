@@ -1,0 +1,29 @@
+name: AI Estimate
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # daily, 3am UTC
+  workflow_dispatch:       # manual trigger to drain faster or test
+
+jobs:
+  estimate:
+    name: Estimate micronutrients
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run AI estimation (up to 150 products)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node ai-guesstimate.mjs --limit 150

@@ -1,0 +1,210 @@
+name: Sync Open Food Facts
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # weekly, Sunday 2am UTC
+  workflow_dispatch:
+    inputs:
+      n_chunks:
+        description: 'Parallel processing chunks (1-16)'
+        default: '8'
+        type: string
+
+env:
+  R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+  R2_BUCKET: ydin-open-food-facts-prod
+
+jobs:
+  build:
+    name: Build Rust binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'src/**') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: process_chunk
+          path: target/release/process_chunk
+          retention-days: 1
+
+  download-csv:
+    name: Download Open Food Facts CSV
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download products.csv.gz
+        run: |
+          curl -L --retry 3 --retry-delay 5 \
+            https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz \
+            -o products.csv.gz
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: products-csv
+          path: products.csv.gz
+          retention-days: 1
+
+  prepare:
+    name: Generate chunk matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Generate matrix
+        id: gen
+        run: |
+          N="${{ inputs.n_chunks || '8' }}"
+          CHUNK_SIZE=275000
+          MATRIX="["
+          for i in $(seq 0 $((N-1))); do
+            SKIP=$((i * CHUNK_SIZE))
+            if [ "$i" -eq "$((N-1))" ]; then
+              TAKE=9999999
+            else
+              TAKE=$CHUNK_SIZE
+            fi
+            if [ "$i" -gt 0 ]; then
+              MATRIX="${MATRIX},"
+            fi
+            MATRIX="${MATRIX}{\"index\":${i},\"skip\":${SKIP},\"take\":${TAKE}}"
+          done
+          MATRIX="${MATRIX}]"
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+  process:
+    name: Process chunk ${{ matrix.chunk.index }}
+    needs: [build, download-csv, prepare]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chunk: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      max-parallel: 16
+      fail-fast: false
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: process_chunk
+
+      - name: Download CSV
+        uses: actions/download-artifact@v4
+        with:
+          name: products-csv
+
+      - name: Prepare binary and data
+        run: |
+          chmod +x process_chunk
+          mkdir -p food_facts_raw_data
+          mv products.csv.gz food_facts_raw_data/products.csv.gz
+
+      - name: Process chunk
+        env:
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          mkdir -p output
+          ./process_chunk \
+            --input-file food_facts_raw_data/products.csv.gz \
+            --skip ${{ matrix.chunk.skip }} \
+            --take ${{ matrix.chunk.take }} \
+            --output-dir output \
+            --r2-endpoint "${{ env.R2_ENDPOINT }}" \
+            --r2-bucket "${{ env.R2_BUCKET }}" \
+            --r2-access-key "$R2_ACCESS_KEY" \
+            --r2-secret-key "$R2_SECRET_KEY" \
+            --r2-concurrency 50
+
+      - name: Upload chunk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.chunk.index }}
+          path: output/
+          retention-days: 1
+
+  merge:
+    name: Merge catalogs and update AI queue
+    needs: [process]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          path: chunks/
+
+      - name: Install brotli
+        run: sudo apt-get install -y brotli
+
+      - name: Install AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws-region: auto
+
+      - name: Merge catalogs and upload to R2
+        env:
+          R2_ENDPOINT: ${{ env.R2_ENDPOINT }}
+          R2_BUCKET: ${{ env.R2_BUCKET }}
+        run: |
+          # Find all country codes across chunks
+          ALL_COUNTRIES=$(find chunks/ -mindepth 3 -maxdepth 3 -type d | xargs -I{} basename {} | sort -u)
+
+          for cc in $ALL_COUNTRIES; do
+            # Cat all partial JSONL for this country, compress, upload
+            PARTS=$(find chunks/ -path "*/catalogs/${cc}/chunk.jsonl" 2>/dev/null)
+            if [ -n "$PARTS" ]; then
+              echo "Merging catalog for: $cc"
+              cat $PARTS | brotli -q 6 -o /tmp/catalog_${cc}.jsonl.br
+              aws s3 cp /tmp/catalog_${cc}.jsonl.br \
+                "s3://${R2_BUCKET}/indexes/catalogs/${cc}/catalog.jsonl.br" \
+                --endpoint-url "${R2_ENDPOINT}" \
+                --content-type "application/octet-stream"
+              rm /tmp/catalog_${cc}.jsonl.br
+            fi
+          done
+
+      - name: Merge changed codes and update AI pending queue
+        env:
+          R2_ENDPOINT: ${{ env.R2_ENDPOINT }}
+          R2_BUCKET: ${{ env.R2_BUCKET }}
+        run: |
+          # Merge all changed_codes.txt from chunks
+          find chunks/ -name "changed_codes.txt" -exec cat {} \; | sort -u > /tmp/changed_codes.txt
+          CHANGED_COUNT=$(wc -l < /tmp/changed_codes.txt)
+          echo "Changed products this run: $CHANGED_COUNT"
+
+          # Upload latest changed codes (for local Ollama seed)
+          aws s3 cp /tmp/changed_codes.txt \
+            "s3://${R2_BUCKET}/meta/latest_changed_codes.txt" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --content-type "text/plain"
+
+          # Append new codes to AI pending queue (download existing, append, deduplicate, upload)
+          aws s3 cp \
+            "s3://${R2_BUCKET}/meta/ai_pending.txt" \
+            /tmp/ai_pending_existing.txt \
+            --endpoint-url "${R2_ENDPOINT}" 2>/dev/null || touch /tmp/ai_pending_existing.txt
+
+          cat /tmp/ai_pending_existing.txt /tmp/changed_codes.txt | sort -u > /tmp/ai_pending_new.txt
+          PENDING_COUNT=$(wc -l < /tmp/ai_pending_new.txt)
+          echo "Total AI pending after append: $PENDING_COUNT"
+
+          aws s3 cp /tmp/ai_pending_new.txt \
+            "s3://${R2_BUCKET}/meta/ai_pending.txt" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --content-type "text/plain"

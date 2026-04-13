@@ -1,0 +1,6 @@
+/target
+node_modules/
+food_facts_raw_data/
+output/
+*.csv.gz
+ai-progress.json
