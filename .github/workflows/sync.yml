@@ -2,12 +2,12 @@ name: Sync Open Food Facts
 
 on:
   schedule:
-    - cron: '0 2 * * 0'  # weekly, Sunday 2am UTC
+    - cron: '0 2 * * 1'  # weekly, Monday 2am UTC
   workflow_dispatch:
     inputs:
       n_chunks:
-        description: 'Parallel processing chunks (1-16)'
-        default: '8'
+        description: 'Parallel processing chunks (1-24)'
+        default: '24'
         type: string
 
 env:
@@ -67,7 +67,7 @@ jobs:
       - name: Generate matrix
         id: gen
         run: |
-          N="${{ inputs.n_chunks || '8' }}"
+          N="${{ inputs.n_chunks || '24' }}"
 
           # Fetch real product count from OFF API (page_size=1 is enough to get count)
           TOTAL=$(curl -sf "https://world.openfoodfacts.org/api/v2/search?page_size=1&fields=code" | jq -r '.count')
@@ -105,7 +105,7 @@ jobs:
     strategy:
       matrix:
         chunk: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      max-parallel: 16
+      max-parallel: 24
       fail-fast: false
     steps:
       - name: Download binary
