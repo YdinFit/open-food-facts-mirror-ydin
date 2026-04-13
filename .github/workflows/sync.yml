@@ -68,7 +68,20 @@ jobs:
         id: gen
         run: |
           N="${{ inputs.n_chunks || '8' }}"
-          CHUNK_SIZE=275000
+
+          # Fetch real product count from OFF API (page_size=1 is enough to get count)
+          TOTAL=$(curl -sf "https://world.openfoodfacts.org/api/v2/search?page_size=1&fields=code" | jq -r '.count')
+          if [ -z "$TOTAL" ] || [ "$TOTAL" -eq 0 ]; then
+            echo "ERROR: could not fetch product count from OFF API"
+            exit 1
+          fi
+          echo "Total products: $TOTAL"
+
+          # Ceiling division: each chunk covers exactly TOTAL/N rows (last chunk uses 9999999
+          # as a safety net in case new products were added since this API call)
+          CHUNK_SIZE=$(( (TOTAL + N - 1) / N ))
+          echo "Chunk size: $CHUNK_SIZE (N=$N)"
+
           MATRIX="["
           for i in $(seq 0 $((N-1))); do
             SKIP=$((i * CHUNK_SIZE))
