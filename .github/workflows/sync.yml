@@ -19,10 +19,10 @@ jobs:
     name: Build Rust binary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Cache Rust build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -35,7 +35,7 @@ jobs:
         run: cargo build --release
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: process_chunk
           path: target/release/process_chunk
@@ -52,7 +52,7 @@ jobs:
             -o products.csv.gz
 
       - name: Upload CSV artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: products-csv
           path: products.csv.gz
@@ -109,12 +109,12 @@ jobs:
       fail-fast: false
     steps:
       - name: Download binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: process_chunk
 
       - name: Download CSV
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: products-csv
 
@@ -142,7 +142,7 @@ jobs:
             --r2-concurrency 50
 
       - name: Upload chunk artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chunk-${{ matrix.chunk.index }}
           path: output/
@@ -154,7 +154,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all chunk artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: chunk-*
           path: chunks/
@@ -163,7 +163,7 @@ jobs:
         run: sudo apt-get install -y brotli
 
       - name: Install AWS CLI
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
