@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{Builder as S3Builder, Region};
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use clap::Parser;
@@ -999,12 +1000,26 @@ async fn setup_s3_client(args: &Args) -> Result<S3Client> {
     Ok(S3Client::from_conf(s3_config))
 }
 
-async fn put_object(
+// Returns true if the object was uploaded (new or changed), false if skipped (unchanged).
+async fn upload_if_changed(
     client: &S3Client,
     bucket: &str,
     key: &str,
     body: Vec<u8>,
-) -> Result<()> {
+) -> Result<bool> {
+    let new_etag = format!("{:x}", md5::compute(&body));
+
+    match client.head_object().bucket(bucket).key(key).send().await {
+        Ok(head) => {
+            let existing = head.e_tag().unwrap_or("").trim_matches('"');
+            if existing == new_etag {
+                return Ok(false);
+            }
+        }
+        Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 404 => {}
+        Err(e) => return Err(anyhow::anyhow!("HEAD failed for {}: {}", key, e)),
+    }
+
     client
         .put_object()
         .bucket(bucket)
@@ -1014,7 +1029,7 @@ async fn put_object(
         .send()
         .await
         .with_context(|| format!("PUT failed: {}", key))?;
-    Ok(())
+    Ok(true)
 }
 
 // ---- Main ----
@@ -1072,7 +1087,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut upload_tasks: JoinSet<()> = JoinSet::new();
+    let mut upload_tasks: JoinSet<Option<String>> = JoinSet::new();
     let mut batch: Vec<StringRecord> = Vec::with_capacity(BATCH_SIZE);
     let mut taken = 0usize;
     let mut total_processed = 0usize;
@@ -1121,10 +1136,6 @@ async fn main() -> Result<()> {
             total_skipped += batch_skipped;
 
             for pr in parsed {
-                // Write changed code
-                writeln!(changed_writer, "{}", pr.code)
-                    .with_context(|| "Failed to write changed code")?;
-
                 // Write catalog entries
                 for (entry, country_code) in &pr.catalog_entries {
                     if !catalog_writers.contains_key(country_code) {
@@ -1143,16 +1154,22 @@ async fn main() -> Result<()> {
                         .with_context(|| "Failed to write catalog entry")?;
                 }
 
-                // Spawn R2 upload
+                // Spawn R2 upload — returns Some(code) if uploaded, None if unchanged
                 let sem = semaphore.clone();
                 let client = s3_client.clone();
                 let bkt = bucket.clone();
+                let code = pr.code.clone();
                 let key = format!("products/{}.json", pr.code);
                 let body = pr.json_bytes;
                 upload_tasks.spawn(async move {
                     let _permit = sem.acquire().await.unwrap();
-                    if let Err(e) = put_object(&client, &bkt, &key, body).await {
-                        eprintln!("Upload error {}: {}", key, e);
+                    match upload_if_changed(&client, &bkt, &key, body).await {
+                        Ok(true) => Some(code),
+                        Ok(false) => None,
+                        Err(e) => {
+                            eprintln!("Upload error {}: {}", key, e);
+                            None
+                        }
                     }
                 });
             }
@@ -1176,21 +1193,31 @@ async fn main() -> Result<()> {
         w.flush()
             .with_context(|| format!("Failed to flush catalog writer for {}", cc))?;
     }
-    changed_writer.flush()
-        .with_context(|| "Failed to flush changed_codes.txt")?;
 
-    // Wait for all uploads to complete
+    // Wait for all uploads to complete, collect changed codes
     println!("Waiting for {} pending uploads...", upload_tasks.len());
+    let mut total_uploaded = 0usize;
+    let mut total_unchanged = 0usize;
     while let Some(r) = upload_tasks.join_next().await {
-        if let Err(e) = r {
-            eprintln!("Upload task panicked: {}", e);
+        match r {
+            Ok(Some(code)) => {
+                writeln!(changed_writer, "{}", code)
+                    .with_context(|| "Failed to write changed code")?;
+                total_uploaded += 1;
+            }
+            Ok(None) => total_unchanged += 1,
+            Err(e) => eprintln!("Upload task panicked: {}", e),
         }
     }
+    changed_writer.flush()
+        .with_context(|| "Failed to flush changed_codes.txt")?;
 
     let elapsed = start.elapsed().as_secs_f64();
     println!("\nDone:");
     println!("  Processed:  {}", total_processed);
     println!("  Skipped:    {}", total_skipped);
+    println!("  Uploaded:   {}", total_uploaded);
+    println!("  Unchanged:  {}", total_unchanged);
     println!("  Time:       {:.1}s", elapsed);
     println!("  Rate:       {:.0} products/s", total_processed as f64 / elapsed);
 

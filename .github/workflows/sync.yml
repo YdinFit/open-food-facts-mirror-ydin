@@ -162,15 +162,10 @@ jobs:
       - name: Install brotli
         run: sudo apt-get install -y brotli
 
-      - name: Install AWS CLI
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          aws-region: auto
-
       - name: Merge catalogs and upload to R2
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ env.R2_ENDPOINT }}
           R2_BUCKET: ${{ env.R2_BUCKET }}
         run: |
@@ -193,6 +188,8 @@ jobs:
 
       - name: Merge changed codes and update AI pending queue
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ env.R2_ENDPOINT }}
           R2_BUCKET: ${{ env.R2_BUCKET }}
         run: |
