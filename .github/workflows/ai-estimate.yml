@@ -1,9 +1,7 @@
 name: AI Estimate
 
 on:
-  schedule:
-    - cron: '0 3 * * *'  # daily, 3am UTC
-  workflow_dispatch:       # manual trigger to drain faster or test
+  workflow_dispatch:
 
 jobs:
   estimate:

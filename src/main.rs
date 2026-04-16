@@ -1,19 +1,16 @@
 use anyhow::{Context, Result};
-use aws_config::BehaviorVersion;
-use aws_credential_types::Credentials;
-use aws_sdk_s3::config::{Builder as S3Builder, Region};
-use aws_sdk_s3::error::SdkError;
-use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::Client as S3Client;
 use clap::Parser;
 use csv::{ReaderBuilder, StringRecord};
 use flate2::read::GzDecoder;
 use iso3166::{Country, LIST};
+use open_food_facts_mirror::{
+    setup_s3_client, upload_if_changed, AminoAcids, Breakdown, CatalogEntry, CatalogWriter,
+    FatBreakdown, MacroNutrients, Minerals, OtherNutrients, Product, R2Config, Vitamins,
+};
 use rayon::prelude::*;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -64,220 +61,6 @@ struct Args {
 
 const CSV_SEPARATOR: u8 = b'\t';
 const BATCH_SIZE: usize = 10_000;
-
-// ---- Data Structures ----
-#[derive(Debug, Serialize, Deserialize)]
-struct Product {
-    code: String,
-    product_name: Option<String>,
-    generic_name: Option<String>,
-    ingredients_text: Option<String>,
-    brands: Option<String>,
-    main_category: Option<String>,
-    serving_size: Option<f64>,
-    serving_unit: Option<String>,
-    breakdown: Breakdown,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Breakdown {
-    macros: MacroNutrients,
-    vitamins: Vitamins,
-    minerals: Minerals,
-    fats: FatBreakdown,
-    other: OtherNutrients,
-    #[serde(default)]
-    amino_acids: AminoAcids,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct MacroNutrients {
-    energy_kcal: Option<f64>,
-    energy_kj: Option<f64>,
-    carbohydrates: Option<f64>,
-    fat: Option<f64>,
-    proteins: Option<f64>,
-    sugars: Option<f64>,
-    fiber: Option<f64>,
-    salt: Option<f64>,
-    added_sugars: Option<f64>,
-    sucrose: Option<f64>,
-    glucose: Option<f64>,
-    fructose: Option<f64>,
-    galactose: Option<f64>,
-    lactose: Option<f64>,
-    maltose: Option<f64>,
-    maltodextrins: Option<f64>,
-    psicose: Option<f64>,
-    starch: Option<f64>,
-    polyols: Option<f64>,
-    erythritol: Option<f64>,
-    isomalt: Option<f64>,
-    maltitol: Option<f64>,
-    sorbitol: Option<f64>,
-    soluble_fiber: Option<f64>,
-    insoluble_fiber: Option<f64>,
-    polydextrose: Option<f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Vitamins {
-    vitamin_a: Option<f64>,
-    beta_carotene: Option<f64>,
-    vitamin_d: Option<f64>,
-    vitamin_e: Option<f64>,
-    vitamin_k: Option<f64>,
-    vitamin_c: Option<f64>,
-    vitamin_b1: Option<f64>,
-    vitamin_b2: Option<f64>,
-    vitamin_pp: Option<f64>,
-    vitamin_b6: Option<f64>,
-    vitamin_b9: Option<f64>,
-    folates: Option<f64>,
-    vitamin_b12: Option<f64>,
-    biotin: Option<f64>,
-    pantothenic_acid: Option<f64>,
-    choline: Option<f64>,
-    phylloquinone: Option<f64>,
-    inositol: Option<f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Minerals {
-    sodium: Option<f64>,
-    calcium: Option<f64>,
-    phosphorus: Option<f64>,
-    iron: Option<f64>,
-    magnesium: Option<f64>,
-    zinc: Option<f64>,
-    copper: Option<f64>,
-    manganese: Option<f64>,
-    fluoride: Option<f64>,
-    selenium: Option<f64>,
-    chromium: Option<f64>,
-    molybdenum: Option<f64>,
-    iodine: Option<f64>,
-    potassium: Option<f64>,
-    chloride: Option<f64>,
-    silica: Option<f64>,
-    bicarbonate: Option<f64>,
-    sulphate: Option<f64>,
-    nitrate: Option<f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct FatBreakdown {
-    saturated: Option<f64>,
-    unsaturated: Option<f64>,
-    monounsaturated: Option<f64>,
-    polyunsaturated: Option<f64>,
-    trans: Option<f64>,
-    cholesterol: Option<f64>,
-    omega_3: Option<f64>,
-    omega_6: Option<f64>,
-    omega_9: Option<f64>,
-    alpha_linolenic_acid: Option<f64>,
-    eicosapentaenoic_acid: Option<f64>,
-    docosahexaenoic_acid: Option<f64>,
-    linoleic_acid: Option<f64>,
-    arachidonic_acid: Option<f64>,
-    gamma_linolenic_acid: Option<f64>,
-    dihomo_gamma_linolenic_acid: Option<f64>,
-    oleic_acid: Option<f64>,
-    elaidic_acid: Option<f64>,
-    gondoic_acid: Option<f64>,
-    mead_acid: Option<f64>,
-    erucic_acid: Option<f64>,
-    nervonic_acid: Option<f64>,
-    butyric_acid: Option<f64>,
-    caproic_acid: Option<f64>,
-    caprylic_acid: Option<f64>,
-    capric_acid: Option<f64>,
-    lauric_acid: Option<f64>,
-    myristic_acid: Option<f64>,
-    palmitic_acid: Option<f64>,
-    stearic_acid: Option<f64>,
-    arachidic_acid: Option<f64>,
-    behenic_acid: Option<f64>,
-    lignoceric_acid: Option<f64>,
-    cerotic_acid: Option<f64>,
-    montanic_acid: Option<f64>,
-    melissic_acid: Option<f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct OtherNutrients {
-    caffeine: Option<f64>,
-    taurine: Option<f64>,
-    carnitine: Option<f64>,
-    beta_glucan: Option<f64>,
-    alcohol: Option<f64>,
-    nucleotides: Option<f64>,
-    casein: Option<f64>,
-    serum_proteins: Option<f64>,
-    methylsulfonylmethane: Option<f64>,
-    energy_from_fat: Option<f64>,
-    added_salt: Option<f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct AminoAcids {
-    histidine: Option<f64>,
-    isoleucine: Option<f64>,
-    leucine: Option<f64>,
-    lysine: Option<f64>,
-    methionine: Option<f64>,
-    phenylalanine: Option<f64>,
-    threonine: Option<f64>,
-    tryptophan: Option<f64>,
-    valine: Option<f64>,
-    alanine: Option<f64>,
-    arginine: Option<f64>,
-    aspartic_acid: Option<f64>,
-    cysteine: Option<f64>,
-    glutamic_acid: Option<f64>,
-    glycine: Option<f64>,
-    proline: Option<f64>,
-    serine: Option<f64>,
-    tyrosine: Option<f64>,
-    hydroxyproline: Option<f64>,
-    cystine: Option<f64>,
-}
-
-#[derive(Debug)]
-struct CatalogEntry {
-    code: String,
-    name: Option<String>,
-    brand: Option<String>,
-    country: Option<String>,
-    serving_size: Option<f64>,
-    serving_unit: Option<String>,
-    fiber: Option<f64>,
-    carbs: Option<f64>,
-    fat: Option<f64>,
-    protein: Option<f64>,
-}
-
-impl serde::Serialize for CatalogEntry {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(10))?;
-        seq.serialize_element(&self.code)?;
-        seq.serialize_element(&self.name)?;
-        seq.serialize_element(&self.brand)?;
-        seq.serialize_element(&self.country)?;
-        seq.serialize_element(&self.serving_size)?;
-        seq.serialize_element(&self.serving_unit)?;
-        seq.serialize_element(&self.fiber)?;
-        seq.serialize_element(&self.carbs)?;
-        seq.serialize_element(&self.fat)?;
-        seq.serialize_element(&self.protein)?;
-        seq.end()
-    }
-}
 
 // ---- Column Index ----
 struct ColumnIndex {
@@ -944,6 +727,7 @@ fn parse_single_record(
 
     let product = Product {
         code: code.clone(),
+        source: "open-food-facts".to_string(),
         product_name: name.clone(),
         generic_name,
         ingredients_text,
@@ -981,57 +765,6 @@ fn parse_single_record(
     Some(ParsedRecord { code, json_bytes, catalog_entries })
 }
 
-// ---- R2 Upload ----
-async fn setup_s3_client(args: &Args) -> Result<S3Client> {
-    let creds = Credentials::new(
-        &args.r2_access_key,
-        &args.r2_secret_key,
-        None,
-        None,
-        "cli-args",
-    );
-    let config = aws_config::defaults(BehaviorVersion::latest())
-        .credentials_provider(creds)
-        .region(Region::new("auto"))
-        .endpoint_url(&args.r2_endpoint)
-        .load()
-        .await;
-    let s3_config = S3Builder::from(&config).force_path_style(true).build();
-    Ok(S3Client::from_conf(s3_config))
-}
-
-// Returns true if the object was uploaded (new or changed), false if skipped (unchanged).
-async fn upload_if_changed(
-    client: &S3Client,
-    bucket: &str,
-    key: &str,
-    body: Vec<u8>,
-) -> Result<bool> {
-    let new_etag = format!("{:x}", md5::compute(&body));
-
-    match client.head_object().bucket(bucket).key(key).send().await {
-        Ok(head) => {
-            let existing = head.e_tag().unwrap_or("").trim_matches('"');
-            if existing == new_etag {
-                return Ok(false);
-            }
-        }
-        Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 404 => {}
-        Err(e) => return Err(anyhow::anyhow!("HEAD failed for {}: {}", key, e)),
-    }
-
-    client
-        .put_object()
-        .bucket(bucket)
-        .key(key)
-        .body(ByteStream::from(body))
-        .content_type("application/json")
-        .send()
-        .await
-        .with_context(|| format!("PUT failed: {}", key))?;
-    Ok(true)
-}
-
 // ---- Main ----
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -1045,20 +778,24 @@ async fn main() -> Result<()> {
     println!("  r2_bucket:  {}", args.r2_bucket);
     println!("  concurrency:{}", args.r2_concurrency);
 
-    let s3_client = Arc::new(setup_s3_client(&args).await?);
+    let r2_config = R2Config {
+        endpoint: args.r2_endpoint.clone(),
+        bucket: args.r2_bucket.clone(),
+        access_key: args.r2_access_key.clone(),
+        secret_key: args.r2_secret_key.clone(),
+        concurrency: args.r2_concurrency,
+    };
+    let s3_client = Arc::new(setup_s3_client(&r2_config).await?);
     let semaphore = Arc::new(Semaphore::new(args.r2_concurrency));
     let bucket = Arc::new(args.r2_bucket.clone());
 
     let catalog_base = args.output_dir.join("catalogs");
-    fs::create_dir_all(&catalog_base)
-        .with_context(|| format!("Failed to create {:?}", catalog_base))?;
+    let mut catalog_writer = CatalogWriter::new(catalog_base)?;
 
     let changed_path = args.output_dir.join("changed_codes.txt");
     let changed_file = File::create(&changed_path)
         .with_context(|| format!("Failed to create {:?}", changed_path))?;
     let mut changed_writer = BufWriter::new(changed_file);
-
-    let mut catalog_writers: HashMap<String, BufWriter<File>> = HashMap::new();
 
     let country_cache = Arc::new(build_country_cache());
 
@@ -1138,20 +875,7 @@ async fn main() -> Result<()> {
             for pr in parsed {
                 // Write catalog entries
                 for (entry, country_code) in &pr.catalog_entries {
-                    if !catalog_writers.contains_key(country_code) {
-                        let dir = catalog_base.join(country_code);
-                        fs::create_dir_all(&dir)
-                            .with_context(|| format!("Failed to create catalog dir {:?}", dir))?;
-                        let path = dir.join("chunk.jsonl");
-                        let f = File::create(&path)
-                            .with_context(|| format!("Failed to create {:?}", path))?;
-                        catalog_writers.insert(country_code.clone(), BufWriter::with_capacity(64 * 1024, f));
-                    }
-                    let w = catalog_writers.get_mut(country_code).unwrap();
-                    let line = serde_json::to_string(entry)
-                        .with_context(|| "Failed to serialize catalog entry")?;
-                    writeln!(w, "{}", line)
-                        .with_context(|| "Failed to write catalog entry")?;
+                    catalog_writer.write_entry(country_code, entry)?;
                 }
 
                 // Spawn R2 upload — returns Some(code) if uploaded, None if unchanged
@@ -1189,10 +913,7 @@ async fn main() -> Result<()> {
     }
 
     // Flush catalog writers
-    for (cc, mut w) in catalog_writers {
-        w.flush()
-            .with_context(|| format!("Failed to flush catalog writer for {}", cc))?;
-    }
+    catalog_writer.flush_all()?;
 
     // Wait for all uploads to complete, collect changed codes
     println!("Waiting for {} pending uploads...", upload_tasks.len());
