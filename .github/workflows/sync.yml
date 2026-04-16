@@ -1,8 +1,6 @@
 name: Sync Open Food Facts
 
 on:
-  schedule:
-    - cron: '0 2 * * 1'  # weekly, Monday 2am UTC
   workflow_dispatch:
     inputs:
       n_chunks:

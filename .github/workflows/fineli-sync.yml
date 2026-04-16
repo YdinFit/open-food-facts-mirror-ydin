@@ -1,0 +1,129 @@
+name: Sync Fineli
+
+on:
+  workflow_dispatch:
+
+env:
+  R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+  R2_BUCKET: ydin-open-food-facts-prod
+
+jobs:
+  build:
+    name: Build Rust binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cache Rust build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'src/**') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Build release binary
+        run: cargo build --release --bin fineli
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fineli-binary
+          path: target/release/fineli
+          retention-days: 1
+
+  download:
+    name: Download Fineli data
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Fineli zip (Package 2 — 4232 foods, 74 nutrients)
+        run: |
+          curl -L --retry 3 --retry-delay 5 \
+            https://fineli.fi/fineli/content/file/48 \
+            -o fineli.zip
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fineli-zip
+          path: fineli.zip
+          retention-days: 1
+
+  process:
+    name: Process Fineli foods
+    needs: [build, download]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v8
+        with:
+          name: fineli-binary
+
+      - name: Download zip
+        uses: actions/download-artifact@v8
+        with:
+          name: fineli-zip
+
+      - name: Prepare
+        run: |
+          chmod +x fineli
+          mkdir -p fineli_data output
+          mv fineli.zip fineli_data/fineli.zip
+
+      - name: Process
+        env:
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          ./fineli \
+            --input-file fineli_data/fineli.zip \
+            --output-dir output \
+            --r2-endpoint "${{ env.R2_ENDPOINT }}" \
+            --r2-bucket "${{ env.R2_BUCKET }}" \
+            --r2-access-key "$R2_ACCESS_KEY" \
+            --r2-secret-key "$R2_SECRET_KEY" \
+            --r2-concurrency 50
+
+      - name: Upload output artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fineli-output
+          path: output/
+          retention-days: 1
+
+  merge:
+    name: Compress catalog and upload to R2
+    needs: [process]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download output artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: fineli-output
+          path: output/
+
+      - name: Install brotli
+        run: sudo apt-get install -y brotli
+
+      - name: Compress and upload Fineli catalog
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ env.R2_ENDPOINT }}
+          R2_BUCKET: ${{ env.R2_BUCKET }}
+        run: |
+          CATALOG=output/catalogs/fineli/chunk.jsonl
+          if [ -f "$CATALOG" ]; then
+            brotli -q 6 -o /tmp/catalog_fineli.jsonl.br "$CATALOG"
+            aws s3 cp /tmp/catalog_fineli.jsonl.br \
+              "s3://${R2_BUCKET}/indexes/catalogs/fineli/catalog.jsonl.br" \
+              --endpoint-url "${R2_ENDPOINT}" \
+              --content-type "application/octet-stream"
+            echo "Fineli catalog uploaded"
+            wc -l < "$CATALOG" | xargs -I{} echo "  {} catalog entries"
+          else
+            echo "ERROR: catalog not found at $CATALOG"
+            exit 1
+          fi
