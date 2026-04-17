@@ -53,7 +53,7 @@ const ENDPOINTS = {
   ollama: {
     baseURL: 'http://localhost:11434/v1',
     apiKey: 'ollama',
-    model: 'llama3.1:8b',
+    model: 'qwen2.5:14b',
   },
 };
 

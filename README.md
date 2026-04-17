@@ -6,7 +6,7 @@ A GitHub Actions pipeline that mirrors the [Open Food Facts](https://world.openf
 
 1. **Weekly sync** (`sync.yml`): Downloads the OFF CSV (~1.5 GB compressed), splits it into N parallel chunks, uploads ~2M product JSONs to R2, merges per-country catalog indexes, and queues changed products for AI estimation.
 
-2. **Daily AI estimation** (`ai-estimate.yml`): Takes up to 150 products from the AI queue, estimates missing micronutrients using `meta-llama-3.1-8b-instruct` via GitHub Models (free tier), and uploads enriched product JSONs back to R2.
+2. **Daily AI estimation** (`ai-estimate.yml`): Takes up to 150 products from the AI queue, estimates missing micronutrients using `gpt-4o-mini` via GitHub Models (free tier), and uploads enriched product JSONs back to R2.
 
 ## Architecture
 
@@ -35,7 +35,7 @@ trigger: weekly (Sunday 2am UTC) | workflow_dispatch(n_chunks)
 ### AI estimation (ai-estimate.yml)
 
 ```
-trigger: daily (3am UTC) | workflow_dispatch
+trigger: daily (10am UTC) | workflow_dispatch
 
 [estimate] download ai_pending.txt → take 150 → estimate each → upload → remove from queue
 ```
