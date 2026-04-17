@@ -306,12 +306,12 @@ function filterNulls(obj) {
 }
 
 // ---- Concurrency Limiter ----
-async function withConcurrency(items, concurrency, fn) {
+async function withConcurrency(items, concurrency, fn, isStopped = () => false) {
   const results = new Array(items.length);
   let idx = 0;
 
   async function worker() {
-    while (idx < items.length) {
+    while (idx < items.length && !isStopped()) {
       const i = idx++;
       results[i] = await fn(items[i], i);
     }
@@ -390,9 +390,11 @@ async function main() {
   let doneCount = 0;
   let failCount = 0;
   let skipCount = 0;
+  let rateLimitHit = false;
   const processedThisRun = [];
 
   await withConcurrency(toProcess, opts.concurrency, async (code) => {
+    if (rateLimitHit) return;
     const productKey = `products/${code}.json`;
 
     // Download product from R2
@@ -420,6 +422,11 @@ async function main() {
     try {
       estimates = await estimateProduct(openaiClient, product, opts);
     } catch (e) {
+      if (e.status === 429) {
+        console.log(`[${code}] Daily rate limit reached — stopping. Remaining codes stay in pending queue.`);
+        rateLimitHit = true;
+        return;
+      }
       console.error(`[${code}] Estimation failed: ${e.message}`);
       progress.failed.push(code);
       failCount++;
@@ -461,12 +468,16 @@ async function main() {
     if ((doneCount + skipCount) % 50 === 0) {
       saveProgress(opts.progressFile, progress);
     }
-  });
+  }, () => rateLimitHit);
 
   // Final progress save
   saveProgress(opts.progressFile, progress);
 
-  console.log(`\nDone: ${doneCount} estimated, ${skipCount} skipped, ${failCount} failed`);
+  if (rateLimitHit) {
+    console.log(`\nStopped at daily rate limit: ${doneCount} estimated, ${skipCount} skipped, ${failCount} failed`);
+  } else {
+    console.log(`\nDone: ${doneCount} estimated, ${skipCount} skipped, ${failCount} failed`);
+  }
 
   // CI: update ai_pending.txt by removing processed codes
   if (sourceIsPending && processedThisRun.length > 0) {
