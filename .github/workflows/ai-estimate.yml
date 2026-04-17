@@ -7,6 +7,8 @@ jobs:
   estimate:
     name: Estimate micronutrients
     runs-on: ubuntu-latest
+    permissions:
+      models: read
     steps:
       - uses: actions/checkout@v6
 
