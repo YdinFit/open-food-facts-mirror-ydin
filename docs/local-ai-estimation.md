@@ -1,9 +1,9 @@
 # Local AI Estimation (Ollama Bulk Seed)
 
-The CI workflow estimates 150 products per day via GitHub Models. For the initial bulk seed of all ~2M products, run this locally using Ollama with parallel model instances.
+The CI workflow estimates 150 products per day via GitHub Models using `gpt-4o-mini`. Since `gpt-4o-mini` is a proprietary model and cannot be run locally, the bulk seed uses Ollama with `qwen2.5:14b` as an open-weight alternative. For the initial bulk seed of all ~2M products, run this locally using Ollama with parallel model instances.
 
-Estimated throughput: ~30K–130K products/day depending on hardware (M2 Pro vs M3 Max).
-Estimated total time for 2M products: **2–6 weeks** running continuously.
+Estimated throughput: ~20K–35K products overnight (8h) on M3 Max; ~3K–8K on M2 Pro.
+Estimated total time for 2M products: **2–3 weeks** on M3 Max, **8–12 weeks** on M2 Pro, running continuously.
 
 ## Prerequisites
 
@@ -18,17 +18,17 @@ Estimated total time for 2M products: **2–6 weeks** running continuously.
 
 ```bash
 brew install ollama
-ollama pull llama3.1:8b   # ~5 GB download
+ollama pull qwen2.5:14b   # ~9 GB download
 ```
 
 ### 2. Start Ollama with parallel request support
 
 ```bash
-# M2 Pro (16GB RAM): use 4 parallel
-OLLAMA_NUM_PARALLEL=4 ollama serve
+# M2 Pro (16GB RAM): use 2 parallel (model is ~9GB, leaves little headroom)
+OLLAMA_NUM_PARALLEL=2 ollama serve
 
-# M3 Max (64GB RAM): use 10 parallel
-OLLAMA_NUM_PARALLEL=10 ollama serve
+# M3 Max (64GB RAM): use 5 parallel
+OLLAMA_NUM_PARALLEL=5 ollama serve
 ```
 
 Leave this running in a separate terminal or as a background service.
@@ -58,7 +58,7 @@ export AWS_SECRET_ACCESS_KEY=<r2_secret_key>
 node ai-guesstimate.mjs \
   --model ollama \
   --codes-file ./codes.txt \
-  --concurrency 4 \
+  --concurrency 50 \
   --limit 50
 ```
 
@@ -82,7 +82,7 @@ export AWS_SECRET_ACCESS_KEY=<r2_secret_key>
 node ai-guesstimate.mjs \
   --model ollama \
   --codes-file ./codes.txt \
-  --concurrency 10
+  --concurrency 50
 " Enter
 ```
 
@@ -106,7 +106,7 @@ console.log('Failed:', p.failed.length);
 |----------|-------------|
 | `--model ollama\|github` | Which model endpoint to use (default: ollama locally, github in CI) |
 | `--codes-file <path>` | File with one product code per line |
-| `--concurrency N` | Parallel requests (default: 10 locally, 3 in CI) |
+| `--concurrency N` | Parallel requests queued to Ollama (default: 50 locally, 3 in CI) |
 | `--limit N` | Stop after N products (useful for testing) |
 | `--progress-file <path>` | Progress file path (default: `ai-progress.json`) |
 | `--enable-search` | Enable Brave web search tool (requires `BRAVE_API_KEY`) |
