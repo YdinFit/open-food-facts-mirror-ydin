@@ -40,9 +40,17 @@ jobs:
     steps:
       - name: Download Fineli zip (Package 2 — 4232 foods, 74 nutrients)
         run: |
-          curl -L --retry 3 --retry-delay 5 \
+          curl -L --fail --show-error --retry 3 --retry-delay 5 \
+            -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
             https://fineli.fi/fineli/content/file/48 \
             -o fineli.zip
+
+          SIZE=$(stat -c%s fineli.zip)
+          echo "Downloaded fineli.zip: ${SIZE} bytes"
+          if [ "$SIZE" -lt 10240 ]; then
+            echo "ERROR: File too small (${SIZE} bytes) — likely blocked or incomplete"
+            exit 1
+          fi
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v7
