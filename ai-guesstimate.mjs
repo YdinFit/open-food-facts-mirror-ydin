@@ -9,7 +9,7 @@
  *   node ai-guesstimate.mjs --model ollama --codes-file ./codes.txt --concurrency 10
  *
  * Downloads the AI pending queue from R2, estimates missing micronutrients using
- * Llama 3.1 8B, and uploads enriched product JSONs back to R2.
+ * GPT-4o Mini, and uploads enriched product JSONs back to R2.
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
@@ -48,7 +48,7 @@ const ENDPOINTS = {
   github: {
     baseURL: 'https://models.inference.ai.azure.com',
     apiKey: process.env.GITHUB_TOKEN,
-    model: 'meta-llama-3.1-8b-instruct',
+    model: 'gpt-4o-mini',
   },
   ollama: {
     baseURL: 'http://localhost:11434/v1',
@@ -220,7 +220,99 @@ ${JSON.stringify(summary)}`;
     const response = await openaiClient.chat.completions.create({
       model: ENDPOINTS[opts.model].model,
       messages,
-      response_format: { type: 'json_object' },
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'nutrition_estimate',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['estimated', 'skipped'] },
+              vitamins: {
+                type: 'object',
+                properties: {
+                  vitamin_a:        { type: ['number', 'null'] },
+                  beta_carotene:    { type: ['number', 'null'] },
+                  vitamin_d:        { type: ['number', 'null'] },
+                  vitamin_e:        { type: ['number', 'null'] },
+                  vitamin_k:        { type: ['number', 'null'] },
+                  vitamin_c:        { type: ['number', 'null'] },
+                  vitamin_b1:       { type: ['number', 'null'] },
+                  vitamin_b2:       { type: ['number', 'null'] },
+                  vitamin_pp:       { type: ['number', 'null'] },
+                  vitamin_b6:       { type: ['number', 'null'] },
+                  vitamin_b9:       { type: ['number', 'null'] },
+                  folates:          { type: ['number', 'null'] },
+                  vitamin_b12:      { type: ['number', 'null'] },
+                  biotin:           { type: ['number', 'null'] },
+                  pantothenic_acid: { type: ['number', 'null'] },
+                  choline:          { type: ['number', 'null'] },
+                  phylloquinone:    { type: ['number', 'null'] },
+                  inositol:         { type: ['number', 'null'] },
+                },
+                required: ['vitamin_a','beta_carotene','vitamin_d','vitamin_e','vitamin_k','vitamin_c','vitamin_b1','vitamin_b2','vitamin_pp','vitamin_b6','vitamin_b9','folates','vitamin_b12','biotin','pantothenic_acid','choline','phylloquinone','inositol'],
+                additionalProperties: false,
+              },
+              minerals: {
+                type: 'object',
+                properties: {
+                  sodium:      { type: ['number', 'null'] },
+                  calcium:     { type: ['number', 'null'] },
+                  phosphorus:  { type: ['number', 'null'] },
+                  iron:        { type: ['number', 'null'] },
+                  magnesium:   { type: ['number', 'null'] },
+                  zinc:        { type: ['number', 'null'] },
+                  copper:      { type: ['number', 'null'] },
+                  manganese:   { type: ['number', 'null'] },
+                  fluoride:    { type: ['number', 'null'] },
+                  selenium:    { type: ['number', 'null'] },
+                  chromium:    { type: ['number', 'null'] },
+                  molybdenum:  { type: ['number', 'null'] },
+                  iodine:      { type: ['number', 'null'] },
+                  potassium:   { type: ['number', 'null'] },
+                  chloride:    { type: ['number', 'null'] },
+                  silica:      { type: ['number', 'null'] },
+                  bicarbonate: { type: ['number', 'null'] },
+                  sulphate:    { type: ['number', 'null'] },
+                  nitrate:     { type: ['number', 'null'] },
+                },
+                required: ['sodium','calcium','phosphorus','iron','magnesium','zinc','copper','manganese','fluoride','selenium','chromium','molybdenum','iodine','potassium','chloride','silica','bicarbonate','sulphate','nitrate'],
+                additionalProperties: false,
+              },
+              amino_acids: {
+                type: 'object',
+                properties: {
+                  histidine:      { type: ['number', 'null'] },
+                  isoleucine:     { type: ['number', 'null'] },
+                  leucine:        { type: ['number', 'null'] },
+                  lysine:         { type: ['number', 'null'] },
+                  methionine:     { type: ['number', 'null'] },
+                  phenylalanine:  { type: ['number', 'null'] },
+                  threonine:      { type: ['number', 'null'] },
+                  tryptophan:     { type: ['number', 'null'] },
+                  valine:         { type: ['number', 'null'] },
+                  alanine:        { type: ['number', 'null'] },
+                  arginine:       { type: ['number', 'null'] },
+                  aspartic_acid:  { type: ['number', 'null'] },
+                  cysteine:       { type: ['number', 'null'] },
+                  glutamic_acid:  { type: ['number', 'null'] },
+                  glycine:        { type: ['number', 'null'] },
+                  proline:        { type: ['number', 'null'] },
+                  serine:         { type: ['number', 'null'] },
+                  tyrosine:       { type: ['number', 'null'] },
+                  hydroxyproline: { type: ['number', 'null'] },
+                  cystine:        { type: ['number', 'null'] },
+                },
+                required: ['histidine','isoleucine','leucine','lysine','methionine','phenylalanine','threonine','tryptophan','valine','alanine','arginine','aspartic_acid','cysteine','glutamic_acid','glycine','proline','serine','tyrosine','hydroxyproline','cystine'],
+                additionalProperties: false,
+              },
+            },
+            required: ['action', 'vitamins', 'minerals', 'amino_acids'],
+            additionalProperties: false,
+          },
+        },
+      },
       temperature: 0,
       ...(tools ? { tools, tool_choice: 'auto' } : {}),
     });
