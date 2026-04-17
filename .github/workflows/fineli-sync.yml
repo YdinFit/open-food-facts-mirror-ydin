@@ -34,10 +34,16 @@ jobs:
           path: target/release/fineli
           retention-days: 1
 
-  download:
-    name: Download Fineli data
+  process:
+    name: Process Fineli foods
+    needs: [build]
     runs-on: ubuntu-latest
     steps:
+      - name: Download binary
+        uses: actions/download-artifact@v8
+        with:
+          name: fineli-binary
+
       - name: Download Fineli zip (Package 2 — 4232 foods, 74 nutrients)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,28 +59,6 @@ jobs:
             echo "ERROR: File too small (${SIZE} bytes)"
             exit 1
           fi
-
-      - name: Upload zip artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: fineli-zip
-          path: fineli.zip
-          retention-days: 1
-
-  process:
-    name: Process Fineli foods
-    needs: [build, download]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download binary
-        uses: actions/download-artifact@v8
-        with:
-          name: fineli-binary
-
-      - name: Download zip
-        uses: actions/download-artifact@v8
-        with:
-          name: fineli-zip
 
       - name: Prepare
         run: |
